@@ -67,6 +67,16 @@ jobs:
             # Attendre que les containers soient prêts
             sleep 10
             
+             # Installation des dépendances PHP (sécurité)
+            echo "📦 Vérification des dépendances PHP..."
+            docker compose exec -T backend composer install --no-interaction --prefer-dist --optimize-autoloader
+
+            # Installation du package doctrine-spatial si manquant
+            if ! docker compose exec -T backend composer show longitude-one/doctrine-spatial >/dev/null 2>&1; then
+              echo "➕ Installation du package longitude-one/doctrine-spatial..."
+              docker compose exec -T backend composer require longitude-one/doctrine-spatial
+            fi
+
             # Lancer les migrations Doctrine
             echo "📦 Lancement des migrations Doctrine..."
             docker compose exec -T backend php bin/console doctrine:migrations:migrate --no-interaction
