@@ -188,9 +188,13 @@ jobs:
               npm install -g serve
             fi
 
+            pwd
+
             if pm2 describe front > /dev/null 2>&1; then
+            echo "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
               pm2 restart front
             else
+            echo "000000000000000000000000000000000000000000000"
               pm2 start "sh -c 'npx serve -s build -l 4000'" --name front
             fi
           EOF
