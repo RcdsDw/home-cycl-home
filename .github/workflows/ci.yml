@@ -1,22 +1,30 @@
-name: Lint and Prettier Check
+name: CI/CD Pipeline
 
 on:
   push:
-    branches:
-      - dev
+
+env:
+  NODE_VERSION: 18
+  PHP_VERSION: 8.4
+  BACK_PROD_ENV: ${{ vars.BACK_PROD_ENV }}
+  FRONT_PROD_ENV: ${{ vars.FRONT_PROD_ENV }}
+  DB_PROD_ENV: ${{ vars.DB_PROD_ENV }}
+  BACK_DEV_ENV: ${{ vars.BACK_DEV_ENV }}
+  FRONT_DEV_ENV: ${{ vars.FRONT_DEV_ENV }}
+  DB_DEV_ENV: ${{ vars.DB_DEV_ENV }}
 
 jobs:
-  lint-and-prettier:
+  lint:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # Frontend
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: 18
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Install Frontend Dependencies
         working-directory: ./home_cycl_home_front
@@ -30,22 +38,156 @@ jobs:
         working-directory: ./home_cycl_home_front
         run: npm run prettier:check
 
-      - name: Run tests front
-        working-directory: ./home_cycl_home_front
-        run: npm test -- --watchAll=false
+  test:
+    runs-on: ubuntu-latest
+    needs: lint 
 
-      # Backend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.4'
-          extensions: mbstring, xml, ctype, iconv, intl, dom, filter, gd, json
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mbstring, xml, ctype, iconv, intl, dom, filter, gd, json, pdo, pdo_pgsql
           coverage: none
+
+      - name: Install Frontend Dependencies
+        working-directory: ./home_cycl_home_front
+        run: npm install
 
       - name: Install Backend Dependencies
         working-directory: ./home_cycl_home_api_sf
         run: composer install --prefer-dist --no-progress --no-interaction
 
-      - name: Run tests back
+      - name: Run frontend tests
+        working-directory: ./home_cycl_home_front
+        run: npm test -- --watchAll=false
+
+      - name: Run backend tests
         working-directory: ./home_cycl_home_api_sf
         run: php bin/phpunit
+
+  deploy:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+      - name: Set environment variables depending on branch
+        run: |
+          if [ "${GITHUB_REF}" == "refs/heads/main" ]; then
+            echo "DB_ENV<<EOF" >> $GITHUB_ENV
+            echo "${DB_PROD_ENV}" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+
+            echo "BACK_ENV<<EOF" >> $GITHUB_ENV
+            echo "${BACK_PROD_ENV}" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+
+            echo "FRONT_ENV<<EOF" >> $GITHUB_ENV
+            echo "${FRONT_PROD_ENV}" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          elif [ "${GITHUB_REF}" == "refs/heads/dev" ]; then
+            echo "DB_ENV<<EOF" >> $GITHUB_ENV
+            echo "${DB_DEV_ENV}" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+
+            echo "BACK_ENV<<EOF" >> $GITHUB_ENV
+            echo "${BACK_DEV_ENV}" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+
+            echo "FRONT_ENV<<EOF" >> $GITHUB_ENV
+            echo "${FRONT_DEV_ENV}" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Add SSH known hosts
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Set deployment directory
+        run: |
+          if [ "${GITHUB_REF}" == "refs/heads/main" ]; then
+            echo "DEPLOY_DIR=/home/${{ secrets.VPS_USER }}/home_cycl_home_main" >> $GITHUB_ENV
+          elif [ "${GITHUB_REF}" == "refs/heads/dev" ]; then
+            echo "DEPLOY_DIR=/home/${{ secrets.VPS_USER }}/home_cycl_home_dev" >> $GITHUB_ENV
+          fi
+
+      - name: Update project via Git
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+            if [ ! -d "$DEPLOY_DIR/.git" ]; then
+              rm -rf "$DEPLOY_DIR"
+              git clone git@github.com:${{ github.repository }} "$DEPLOY_DIR"
+            else
+              cd "$DEPLOY_DIR"
+              git fetch origin
+              git reset --hard origin/${GITHUB_REF##*/}
+            fi
+          EOF
+
+      - name: Deploy backend .env
+        run: |
+          printf "%s\n" "$BACK_ENV" | ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "cat > $DEPLOY_DIR/home_cycl_home_api_sf/.env"
+
+      - name: Deploy frontend .env
+        run: |
+          printf "%s\n" "$FRONT_ENV" | ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "cat > $DEPLOY_DIR/home_cycl_home_front/.env"
+
+      - name: Deploy db .env
+        run: |
+          printf "%s\n" "$DB_ENV" | ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "cat > $DEPLOY_DIR/.env"
+
+      - name: Deploy backend to VPS
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF          
+            cd "$DEPLOY_DIR"
+
+            mkdir -p "../backups"
+            BACKUP_NAME="backup_$(date +%Y%m%d_%H%M%S)"
+            rsync -a --exclude='.git' ./ "../backups/$BACKUP_NAME"
+
+            docker compose down
+            sudo fuser -k 82/tcp
+            docker compose up --build -d --remove-orphans
+            
+            cd "$DEPLOY_DIR/home_cycl_home_api_sf"
+
+            sleep 10
+            docker compose exec backend php bin/console doctrine:migrations:migrate --no-interaction
+          EOF
+
+      - name: Deploy frontend to VPS
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+            cd "$DEPLOY_DIR/home_cycl_home_front"
+            
+            npm install --omit=dev
+            npm run build --verbose
+
+            if ! command -v serve &> /dev/null; then
+              npm install -g serve
+            fi
+
+            if pm2 describe front > /dev/null 2>&1; then
+              pm2 restart front
+            else
+              pm2 start "sh -c 'npx serve -s build -l 4000'" --name front
+            fi
+          EOF

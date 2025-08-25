@@ -1,6 +1,6 @@
 # Makefile
 
-COMPOSE = docker-compose
+COMPOSE = docker compose
 COMPOSE_DEV = $(COMPOSE)
 COMPOSE_PROD = $(COMPOSE) -f docker-compose.yml -f docker-compose.prod.yml
 
