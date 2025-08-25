@@ -75,6 +75,7 @@ jobs:
         run: php bin/phpunit
 
   deploy:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     needs: test
     
@@ -93,7 +94,7 @@ jobs:
             echo "FRONT_ENV<<EOF" >> $GITHUB_ENV
             echo "${FRONT_PROD_ENV}" >> $GITHUB_ENV
             echo "EOF" >> $GITHUB_ENV
-          else
+          elif [ "${GITHUB_REF}" == "refs/heads/dev" ]; then
             echo "DB_ENV<<EOF" >> $GITHUB_ENV
             echo "${DB_DEV_ENV}" >> $GITHUB_ENV
             echo "EOF" >> $GITHUB_ENV
@@ -124,7 +125,7 @@ jobs:
         run: |
           if [ "${GITHUB_REF}" == "refs/heads/main" ]; then
             echo "DEPLOY_DIR=/home/${{ secrets.VPS_USER }}/home_cycl_home_main" >> $GITHUB_ENV
-          else
+          elif [ "${GITHUB_REF}" == "refs/heads/dev" ]; then
             echo "DEPLOY_DIR=/home/${{ secrets.VPS_USER }}/home_cycl_home_dev" >> $GITHUB_ENV
           fi
 
@@ -175,10 +176,6 @@ jobs:
       - name: Deploy frontend to VPS
         run: |
           ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
-            echo "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
-            echo "$DEPLOY_DIR/home_cycl_home_front"
-            echo "$DEPLOY_DIR"
-            echo "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
             cd "$DEPLOY_DIR/home_cycl_home_front"
             
             npm install --omit=dev
@@ -188,13 +185,9 @@ jobs:
               npm install -g serve
             fi
 
-            pwd
-
             if pm2 describe front > /dev/null 2>&1; then
-            echo "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$"
               pm2 restart front
             else
-            echo "000000000000000000000000000000000000000000000"
               pm2 start "sh -c 'npx serve -s build -l 4000'" --name front
             fi
           EOF
